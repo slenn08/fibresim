@@ -167,16 +167,17 @@ class SignalGenerator():
         self.freq_bins, self.time_bins = DSPUtils.generate_bins(sampling_freq, self.nSamples, device)
 
 
-    def signal_generator(self, fibre_generator, signals_per_fibre, num_fibres, pre_process=lambda x: x, post_process=lambda x: x):
+    def signal_generator(self, fibre_generator, signals_per_fibre, num_fibres, pre_process=lambda x: x, post_process=lambda x: x, pilot_spacing=None):
         while True:
             fibre_params = next(fibre_generator)
             fibres = NonLinearFibre(fibre_params, self.nSamples, self.freq_bins, num_fibres)
             for _ in range(signals_per_fibre):
-                sigs = self.generate_signal(batch_size=num_fibres)
+                symbs = self.generate_symbs(pilots_spacing=pilot_spacing, batch_size=num_fibres)
+                sigs = self.generate_signal(symbs)
                 sigs = pre_process(sigs)
                 rx_sigs = fibres.simulate(sigs)
                 rx_sigs = post_process(rx_sigs)
-                yield rx_sigs
+                yield rx_sigs, symbs
 
 
     def add_phase_noise(self, signal, linewidth_min=1e4, linewidth_max=1e5):
