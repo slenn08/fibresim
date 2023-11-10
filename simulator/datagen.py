@@ -174,8 +174,8 @@ class SignalGenerator():
             for _ in range(signals_per_fibre):
                 sigs = self.generate_signal(batch_size=num_fibres)
                 sigs = pre_process(sigs)
-                rx_sigs = fibres.simulate(sigs, 0, 100)
-                sigs = post_process(sigs)
+                rx_sigs = fibres.simulate(sigs)
+                rx_sigs = post_process(rx_sigs)
                 yield rx_sigs
 
 
