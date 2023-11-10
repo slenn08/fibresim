@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fibresim"
+version = "0.0.1"
+authors = [
+  { name="Samuel Lennard", email="s.lennard@ucl.ac.uk" },
+]
+description = "Python-based fibre simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/slenn08/fibresim"
+"Bug Tracker" = "https://github.com/slenn08/fibresim/issues"
