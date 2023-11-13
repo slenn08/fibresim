@@ -52,6 +52,14 @@ class BatchFibreParams():
     def __setitem__(self, param, value):
         self.params[param] = value
 
+    
+    def concat_params(self, other_params):
+        for k in self.params:
+            if self.params[k] is None:
+                self.params[k] = other_params[k]
+            else:
+                self.params[k] = torch.concat((self.params[k], other_params[k]))
+
 
 class SingleFibreParameters():
     """

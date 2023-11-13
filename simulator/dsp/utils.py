@@ -308,10 +308,12 @@ def set_power(signal, power, dim=0, mode_dim=1):
             The signal set to the given power
     """
     # Divide power amongst modes
-    power -= 10 * np.log10(signal.shape[mode_dim])
+    adj_power = power - 10 * np.log10(signal.shape[mode_dim])
     signal_power = 1000*torch.mean((torch.abs(signal))**2, dim=dim, keepdim=True)
-    
-    coef = torch.sqrt(10**(power/10) / signal_power)
+    power_shape = [1 for _ in range(signal_power.ndim)]
+    power_shape[0] = adj_power.shape[0]
+    coef = torch.sqrt(10**(adj_power.reshape(power_shape)/10) / signal_power)
+    # coef = torch.sqrt(10**(power/10) / signal_power)
     signal *= coef
     return signal
 
