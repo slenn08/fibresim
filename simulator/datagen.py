@@ -9,13 +9,13 @@ from .fibres import NonLinearFibre, ParameterFields, BatchFibreParams, SingleFib
 
 class SingleModeParameterRange():
     def __init__(self):
-        self.attenuation = (0.15, 0.22) # dB/km
+        self.attenuation = (0.13, 0.25) # dB/km
         self.dmd = (0, 1) # ps/sqrt(km)
-        self.disp = (0, 25) # ps/nm/km
+        self.disp = (10, 23) # ps/nm/km
         self.slope = (0, 0.12) # ps/nm^2/km
-        self.nl_coef = (0, 4) # /W/km
-        self.length = (1e5, 1e5) # m
-        self.xt_avg_km = (-20, -10) # dB/km
+        self.nl_coef = (0.5, 1.5) # /W/km
+        self.length = (5e4, 5e4) # m
+        self.xt_avg_km = (-40, 10) # dB/km
         self.dz = 1000 # m
 
 
@@ -51,14 +51,25 @@ class SingleModeFibreGenerator():
 
             # Coupling matrices
             steps = int(length / dz)
-            var_to_xt = 10**(xt_avg_km/10) / 40
-            theta = torch.rand((batch_size,steps), device=device) * 2 * torch.pi
-            rot_mat = torch.zeros((batch_size, steps, 2, 2), device=device)
-            rot_mat[:, :, 0, 0] = torch.cos(theta)
-            rot_mat[:, :, 0, 1] = torch.sin(theta)
-            rot_mat[:, :, 1, 0] = torch.sin(theta)
-            rot_mat[:, :, 1, 1] = -torch.cos(theta)
-            params[ParameterFields.COUPLING_MATRICES] = torch.matrix_exp(1j * rot_mat * torch.sqrt(var_to_xt)[:, None, None, None]) 
+            rot_mat = torch.zeros((batch_size, steps, 2, 2), device=device, dtype=torch.complex64)
+
+            var_to_xt = 10**((xt_avg_km + 10*np.log10(dz/1000))/10)
+            rot_mat[:, :, 0, 0] = torch.randn((batch_size, steps), dtype=torch.float32)*1j*(1/np.sqrt(2)) # torch.cos(theta)
+            rot_mat[:, :, 0, 1] = torch.randn((batch_size, steps), dtype=torch.complex64)*(1/np.sqrt(4)) # torch.sin(theta)
+            rot_mat[:, :, 1, 0] = -torch.conj(rot_mat[:, :, 0, 1]) # torch.sin(theta)
+            rot_mat[:, :, 1, 1] = torch.randn((batch_size, steps), dtype=torch.float32)*1j*(1/np.sqrt(2)) # -torch.cos(theta)
+            c1 = torch.matrix_exp(rot_mat * torch.sqrt(var_to_xt)[:, None, None, None]) 
+
+            # var_to_xt = 10**(xt_avg_km/10) / 40
+            # theta = torch.rand((batch_size,steps), device=device) * 2 * torch.pi
+            # rot_mat[:, :, 0, 0] = torch.cos(theta)
+            # rot_mat[:, :, 0, 1] = torch.sin(theta)
+            # rot_mat[:, :, 1, 0] = torch.sin(theta)
+            # rot_mat[:, :, 1, 1] = -torch.cos(theta)
+            # c2 = torch.matrix_exp(1j * rot_mat * torch.sqrt(var_to_xt)[:, None, None, None])
+
+            params[ParameterFields.COUPLING_MATRICES] = c1
+
 
             # NL coefs
             nl_mat = torch.zeros(batch_size, 2, 2, device=device)
@@ -128,7 +139,7 @@ class SignalGenerator():
     Generates random Root Raised Cosine filtered QAM signals
     """
 
-    def __init__(self, sps, alpha, pulse_dur, nSymbs, nModes, nChnls, freq_sep, sampling_freq, M, device):
+    def __init__(self, sps, alpha, pulse_dur, nSymbs, nModes, nChnls, freq_sep, sampling_freq, M, device=torch.device("cpu")):
         """
         Initialises filtering window and frequency and time bins for the signal.
 
@@ -138,7 +149,7 @@ class SignalGenerator():
             alpha: float
                 Roll-off for Root Raised Cosine
             pulse_dur: int
-                Duration of each pulse
+                Number of taps in RRC filter 
             nSymbs: int
                 Number of symbols to send in each signal
             nModes: int
@@ -152,6 +163,7 @@ class SignalGenerator():
             M: int
                 The length of one side of the QAM constellation (i.e. M=4 => 16QAM)
             device: torch.device
+                Device to process data on. Default: torch.device("cpu")
         """
         self.sps = sps
         self.nSymbs = nSymbs
@@ -168,21 +180,44 @@ class SignalGenerator():
 
 
     def signal_generator(self, fibre_generator, signals_per_fibre, num_fibres, pre_process=lambda x: x, post_process=lambda x: x, pilot_spacing=None):
+        """
+        Initialises a generator for producing batches of signals given a fibre generator
+
+        Parameters:
+            fibre_generator: Generator
+                Generator that produces a BatchFibreParams class at each iteration
+            signals_per_fibre: int 
+                Number of signals to generate per fibre (to minimize fibre generation time if long)
+            num_fibres: int
+                Number of fibres in each batch produced by the fibre generator
+            pre_process: func
+                Prepares the signals for propagation through the fibre. Can include adding phase noise, setting power, etc. Takes in
+                a batch of signals and outputs the pre-processed batch of signals
+            post_process: func
+                Processes the signal after propagation, which may include AWGN, normalisation, etc. Takes a batch of signals and outputs
+                post-processed signals.
+            pilot_spacing: int
+                Specifies number of symbols between pilots. If None (default), 
+        """
         while True:
             fibre_params = next(fibre_generator)
+            fibre_params[ParameterFields.NL_COEF][:] = 0  
+            fibre_params[ParameterFields.COUPLING_MATRICES] = torch.eye(2, device=self.device, dtype=torch.complex64).repeat((num_fibres, 50, 1, 1))#[None, None, :, :]
+
             fibres = NonLinearFibre(fibre_params, self.nSamples, self.freq_bins, num_fibres, device=self.device)
             for _ in range(signals_per_fibre):
-                launch_power = -6 + torch.rand((num_fibres,), device=self.device)*16
+                launch_power = 0 + torch.rand((num_fibres,), device=self.device)*10
+                common_offset = ((torch.rand((num_fibres, ), device=self.device)*2 - 1) * torch.pi)[:, None]
 
                 tx_train = self.generate_cazac_seq().repeat((num_fibres, 1, 1))
-                tx_train = self.add_phase_noise(DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2))
+                tx_train = self.add_phase_noise(DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2), common_offset, linewidth_min=0, linewidth_max=0)
                 rx_train = fibres.simulate(tx_train)
                 rx_train = post_process(rx_train)
 
                 symbs = self.generate_symbs(pilots_spacing=pilot_spacing, batch_size=num_fibres)
                 tx_data = self.generate_signal(symbs)
                 offset = torch.randint(0, 20, (tx_data.shape[0],), device=self.device) * self.nSymbs * self.sps
-                tx_data = self.add_phase_noise(DSPUtils.set_power(tx_data, launch_power, dim=1, mode_dim=2), offset=offset)
+                tx_data = self.add_phase_noise(DSPUtils.set_power(tx_data, launch_power, dim=1, mode_dim=2), common_offset, offset=offset)
                 # tx_data = pre_process(tx_data)
                 rx_data = fibres.simulate(tx_data)
                 rx_data = post_process(rx_data)
@@ -190,9 +225,9 @@ class SignalGenerator():
                 yield rx_data, rx_train, symbs
 
 
-    def add_phase_noise(self, signal, linewidth_min=1e4, linewidth_max=1e5, offset=0):
+    def add_phase_noise(self, signal, common_offset, linewidth_min=1e4, linewidth_max=1e5, offset=0):
         linewidth = linewidth_min + torch.rand((signal.shape[0], ), device=self.device) * (linewidth_max - linewidth_min)
-        pn = self.get_phase_noise(linewidth, self.nSamples, signal.shape[0], offset=offset)
+        pn = self.get_phase_noise(linewidth, self.nSamples, common_offset, signal.shape[0], offset=offset)
         return signal * pn[:, :, None]
 
 
@@ -213,14 +248,24 @@ class SignalGenerator():
         if self.M > 2:
             symbs /= (self.M - 1)
         
+        
         # Insert pilots
         if pilots_spacing:
-            pI = torch.randint(0, 2, (batch_size,self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device).to(dtype=torch.float) * 2 - 1
-            pI *= np.sqrt(2)/2
-            pQ = torch.randint(0, 2, (batch_size,self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device).to(dtype=torch.float) * 2 - 1
-            pQ *= np.sqrt(2)/2
-            pilot = pI + 1j*pQ
-            symbs[:, ::pilots_spacing] = pilot   
+            pol1 = [0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j]
+            pol2 = [0.7071-0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j]
+            pol1 = torch.tensor(pol1, dtype=torch.complex64, device=self.device)
+            pol2 = torch.tensor(pol2, dtype=torch.complex64, device=self.device)
+            pilot = torch.stack((pol1, pol2), dim=1)[None, :, :, None]
+            symbs[:, ::pilots_spacing] = pilot[:,:self.nSymbs//pilots_spacing].repeat((batch_size, 1, 1, 1))
+            
+            # gen = torch.Generator(device=self.device)
+            # gen = gen.manual_seed(0)
+            # pI = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
+            # pI *= np.sqrt(2)/2
+            # pQ = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
+            # pQ *= np.sqrt(2)/2
+            # pilot = pI + 1j*pQ
+            # symbs[:, ::pilots_spacing] = pilot.repeat((batch_size, 1, 1, 1))   
                 
         return symbs
 
@@ -235,6 +280,7 @@ class SignalGenerator():
             s = math.ceil(self.nSymbs/self.nModes)
             training_seq[:,2*(i-1)] = torch.roll(cazac_seq, s*2*(i-1))
             training_seq[:,2*i-1] = torch.roll(cazac_seq, s*(2*i-1))
+        
         return DSPUtils.resample_poly(training_seq, self.sps, 1, self.b, dim=0)
     
 
@@ -262,6 +308,9 @@ class SignalGenerator():
         freq_bins = self.freq_bins[:, None]
         nearest_freq_idx = torch.abs(freq_bins - ((-(self.nChnls//2) + torch.arange(self.nChnls, device=self.device)) * self.freq_sep)).argmin(dim=0)
         near_freq = self.freq_bins[nearest_freq_idx]
+        symbs_index = torch.ones((self.nSymbs,), dtype=torch.bool)
+        symbs_index[::32] = 0
+        symbs[:, symbs_index, :, :] = DSPUtils.normalize(symbs[:, symbs_index, :, :], dim=1)
         shaped_signal = DSPUtils.resample_poly(symbs, self.sps, 1, self.b, dim=1)
 
         theta = 2*torch.pi*near_freq*self.time_bins[:,None]
@@ -271,12 +320,12 @@ class SignalGenerator():
         return sig
 
 
-    def get_phase_noise(self, linewidth, num_samples, batch_size=1, offset=0):
+    def get_phase_noise(self, linewidth, num_samples, common_offset, batch_size=1, offset=0):
         ts = 1/self.sampling_freq
         var = 2 * torch.pi * linewidth * ts
         phase_offset = torch.randn((batch_size, ), device=self.device) * torch.sqrt(var * offset)
         phase_steps = torch.randn((batch_size, num_samples), device=self.device) * torch.sqrt(var)[:, None] 
-        phase = torch.cumsum(phase_steps, dim=1) + phase_offset[:, None]
+        phase = torch.cumsum(phase_steps, dim=1) + phase_offset[:, None] + common_offset
         #return phase
         return torch.cos(phase) + 1j * torch.sin(phase)
 
