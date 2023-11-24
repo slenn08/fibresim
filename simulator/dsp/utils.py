@@ -55,7 +55,6 @@ def resample_poly_pre(n_x, up, down, filt):
     return h,up,down,remove
 
 
-# And a resample_poly that takes an upfirdn to use.
 def resample_poly(x, up, down, filt, dim=0):
     n_x = x.shape[dim]
     h,up,down,remove = resample_poly_pre(n_x, up, down, filt)
@@ -283,6 +282,7 @@ def normalize(signal, dim=0):
             Dimension over which to take average power - this will most likely be the time or frequency dimension.
             Default: 0
     """
+    # signal -= torch.mean(signal, dim=dim, keepdim=True)
     power = signal.abs() ** 2
     power = power.mean(dim=dim, keepdim=True).sqrt()
     signal /= power
@@ -376,6 +376,13 @@ def create_rrc_filter(sps, alpha, pulse_dur, device):
     return b
 
 
+def apply_delay(signal, delay, dim=0):
+    wT = torch.fft.fftfreq(n=signal.shape[dim], d=1 / (2 * torch.pi), device=signal.device)
+    shape = [1 for _ in range(signal.ndim)]
+    shape[dim] = signal.shape[dim]
+    return torch.fft.ifft(torch.fft.fft(signal) * torch.exp(-1j * delay * wT).view(shape))
+
+
 def generate_bins(sampling_freq, nSamples, device):
     """
     Generates the frequency and time bins for each signal. 
@@ -394,6 +401,14 @@ def generate_bins(sampling_freq, nSamples, device):
     time_bins = torch.arange(nSamples).to(device=device) * 1/sampling_freq
     
     return freq_bins, time_bins
+
+
+def get_constellation_points(M):
+    xI = torch.linspace(-1, 1, M)
+    xQ = torch.linspace(-1, 1, M)
+    grid = torch.meshgrid((xI, xQ))
+    symbs = (grid[0] + 1j*grid[1]).flatten()
+    return symbs
 
 
 if __name__ == "__main__":

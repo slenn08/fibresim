@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 
 from enum import Enum
 
+
 class ParameterFields(Enum):
     """
     Enum to identify specific fields within the FibreParameters class
@@ -195,16 +196,16 @@ class NonLinearFibre():
             b2 = fibre_params[ParameterFields.BETA2][:, m].unsqueeze(1)
             b3 = fibre_params[ParameterFields.BETA3][:, m].unsqueeze(1)
 
-            A = torch.exp(-attenuation/2 * dz/2)
-            theta = (-b1*(2*torch.pi*freq_bins) - b2/2*(2*torch.pi*freq_bins)**2 - b3/6*(2*torch.pi*freq_bins)**3) * dz/2
-            self.half_step[:, m] = A * (torch.cos(theta) + 1j * torch.sin(theta))
+            # A = torch.exp(-attenuation/2 * dz/2)
+            # theta = (-b1*(2*torch.pi*freq_bins) - b2/2*(2*torch.pi*freq_bins)**2 - b3/6*(2*torch.pi*freq_bins)**3) * dz/2
+            # self.half_step[:, m] = A * (torch.cos(theta) + 1j * torch.sin(theta))
 
-            # D = (-attenuation/2 - 
-            #      1j*b1*(2*torch.pi*freq_bins) - 
-            #      1j*b2/2*(2*torch.pi*freq_bins)**2 -
-            #      1j *b3/6*(2*torch.pi*freq_bins)**3
-            #     ) * dz/2
-            # self.half_step[:, m] = torch.exp(D)
+            D = (-attenuation/2 - 
+                 1j*b1*(2*torch.pi*freq_bins) - 
+                 1j*b2/2*(2*torch.pi*freq_bins)**2 -
+                 1j*b3/6*(2*torch.pi*freq_bins)**3
+                ) * dz/2
+            self.half_step[:, m] = torch.exp(D)
             
 
     def simulate(self, A0):
@@ -220,7 +221,6 @@ class NonLinearFibre():
                 Complex signal after transmission through the fibre
         """
         A = torch.transpose(A0, 1, 2)
-
         for step in range(0, self.steps):
             # Coupling in the time domain
             coup_mats = self.fibre_params[ParameterFields.COUPLING_MATRICES][:, step]
@@ -244,3 +244,47 @@ class NonLinearFibre():
 
         return torch.transpose(A, 1, 2)
 
+
+def adc_clip(signal, clip_ratio=0.05, dim=0):
+        """
+        Performs clipping at the ADC
+
+        Parameters:
+            signal: torch.tensor, shape=(..., nSamples, ...), dtype=torch.complex64
+                Signal to be clipped. Size at 'dim' is nSamples
+            clip_ratio: float
+                Ratio of signal to clip. Default: 0.05
+            dim: int
+                The dimension across which the signal varies over time. Default: 0
+        """
+        max_amp = torch.max(torch.abs(signal), dim=dim, keepdim=True)[0]
+        min_amp = torch.min(torch.abs(signal), dim=dim, keepdim=True)[0]
+        amp_diff = max_amp - min_amp
+        clipped_max = max_amp - (clip_ratio*amp_diff)
+        clipped_min = min_amp + (clip_ratio*amp_diff)
+        i_max = torch.abs(signal) > clipped_max
+
+        for i,i_m in enumerate(i_max):
+            signal[i,i_m[:,0],0] = signal[i,i_m[:,0],0] / torch.abs(signal[i,i_m[:,0],0]) * clipped_max[i,:,0]
+            signal[i,i_m[:,1],1] = signal[i,i_m[:,1],1] / torch.abs(signal[i,i_m[:,1],1]) * clipped_max[i,:,1]
+        # signal[i_max] = signal[i_max] / torch.abs(signal[i_max]) * clipped_max
+
+        i_min = torch.abs(signal) < clipped_min
+        for i,i_m in enumerate(i_min):
+            signal[i,i_m[:,0],0] = signal[i,i_m[:,0],0] / torch.abs(signal[i,i_m[:,0],0]) * clipped_min[i,:,0]
+            signal[i,i_m[:,1],1] = signal[i,i_m[:,1],1] / torch.abs(signal[i,i_m[:,1],1]) * clipped_min[i,:,1]
+        # signal[i_min] = signal[i_min] / torch.abs(signal[i_min]) * clipped_min
+
+        return signal
+    
+
+def ofdm_clip(signal, clip_ratio_db, dim=0):
+    """
+    Performs clipping at the transmitter, generally used in OFDM to lower peak-to-average-power-ratio.
+    """
+    clip_ratio = 10**(clip_ratio_db/20)
+    power = torch.mean(torch.abs(signal)**2, dim=dim, keepdim=True)
+    A = clip_ratio * torch.sqrt(power)
+    p = torch.abs(signal) > A
+    signal[p] = (A * (signal/torch.abs(signal)))[p]
+    return signal

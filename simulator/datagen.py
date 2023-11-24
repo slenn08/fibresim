@@ -11,7 +11,7 @@ class SingleModeParameterRange():
     def __init__(self):
         self.attenuation = (0.13, 0.25) # dB/km
         self.dmd = (0, 1) # ps/sqrt(km)
-        self.disp = (10, 23) # ps/nm/km
+        self.disp = (10, 25) # ps/nm/km
         self.slope = (0, 0.12) # ps/nm^2/km
         self.nl_coef = (0.5, 1.5) # /W/km
         self.length = (5e4, 5e4) # m
@@ -200,17 +200,16 @@ class SignalGenerator():
                 Specifies number of symbols between pilots. If None (default), 
         """
         while True:
-            fibre_params = next(fibre_generator)
-            fibre_params[ParameterFields.NL_COEF][:] = 0  
-            fibre_params[ParameterFields.COUPLING_MATRICES] = torch.eye(2, device=self.device, dtype=torch.complex64).repeat((num_fibres, 50, 1, 1))#[None, None, :, :]
+            fibre_params = next(fibre_generator)    
 
             fibres = NonLinearFibre(fibre_params, self.nSamples, self.freq_bins, num_fibres, device=self.device)
             for _ in range(signals_per_fibre):
                 launch_power = 0 + torch.rand((num_fibres,), device=self.device)*10
-                common_offset = ((torch.rand((num_fibres, ), device=self.device)*2 - 1) * torch.pi)[:, None]
+                common_offset = 0#((torch.rand((num_fibres, ), device=self.device)*2 - 1) * torch.pi)[:, None]
 
                 tx_train = self.generate_cazac_seq().repeat((num_fibres, 1, 1))
-                tx_train = self.add_phase_noise(DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2), common_offset, linewidth_min=0, linewidth_max=0)
+                # tx_train = DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2)
+                tx_train = self.add_phase_noise(DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2), common_offset)
                 rx_train = fibres.simulate(tx_train)
                 rx_train = post_process(rx_train)
 
@@ -218,17 +217,56 @@ class SignalGenerator():
                 tx_data = self.generate_signal(symbs)
                 offset = torch.randint(0, 20, (tx_data.shape[0],), device=self.device) * self.nSymbs * self.sps
                 tx_data = self.add_phase_noise(DSPUtils.set_power(tx_data, launch_power, dim=1, mode_dim=2), common_offset, offset=offset)
+                # tx_data = DSPUtils.set_power(tx_data, launch_power, dim=1, mode_dim=2)
                 # tx_data = pre_process(tx_data)
                 rx_data = fibres.simulate(tx_data)
                 rx_data = post_process(rx_data)
-
+                # yield tx_data, tx_train, symbs
                 yield rx_data, rx_train, symbs
 
 
     def add_phase_noise(self, signal, common_offset, linewidth_min=1e4, linewidth_max=1e5, offset=0):
+        """
+        Adds laser phase noise to input signal. Adds a common phase offset to the entire signal, followed by phase
+        noise generated via a random walk.
+
+        Parameters:
+            signal: torch.tensor, shape=(batch_size, nSamples, nModes), dtype=torch.complex64
+            common_offset: torch.tensor, shape=(batch_size), dtype=torch.complex64
+                Phase offset applied to entire signal
+            linewidth_min: int
+                The minimum linewidth for generating the phase noise. Default at 10kHz
+            linewidth_max: int
+                Maximum linewidth for generating phase noise. Default at 100kHz
+            offset: int | torch.tensor, shape=(batch_size,), dtype=int
+                Offset (in samples) between the training sequence and the data sequence
+        
+        Returns:
+            signal: torch.tensor, shape=(batch_size, nSamples, nModes), dtype=torch.complex64
+                Signal that has been exposed to laser phase noise
+        """
         linewidth = linewidth_min + torch.rand((signal.shape[0], ), device=self.device) * (linewidth_max - linewidth_min)
         pn = self.get_phase_noise(linewidth, self.nSamples, common_offset, signal.shape[0], offset=offset)
         return signal * pn[:, :, None]
+    
+
+    def get_phase_noise(self, linewidth, num_samples, common_offset, batch_size=1, offset=0):
+        """
+        Gets the phase change in the form of a complex signal with amplitude 1 and varying argument.
+
+        Parameters
+            linewidth: torch.tensor, shape=(batch_size), dtype=torch.float32
+                The linewidth of the laser, used to compute variance of the random walk
+            num_samples: int
+                Number of samples in frame. This is the length of the random walk
+            common_offset: int |
+        """
+        ts = 1/self.sampling_freq
+        var = 2 * torch.pi * linewidth * ts
+        phase_offset = torch.randn((batch_size, ), device=self.device) * torch.sqrt(var * offset)
+        phase_steps = torch.randn((batch_size, num_samples), device=self.device) * torch.sqrt(var)[:, None] 
+        phase = torch.cumsum(phase_steps, dim=1) + phase_offset[:, None] + common_offset
+        return torch.cos(phase) + 1j * torch.sin(phase)
 
 
     def add_noise(self, signal, noise_power_min, noise_power_max):
@@ -236,6 +274,47 @@ class SignalGenerator():
         noise = torch.randn(signal.shape, dtype=torch.complex64, device=self.device)
         noise = DSPUtils.set_power(noise, noise_power, dim=1, mode_dim=2)
         return signal + noise
+
+
+    def adc_clip(self, signal, clip_ratio=0.05, dim=0):
+        """
+        Performs clipping at the ADC
+
+        Parameters:
+            signal: torch.tensor, shape=(..., nSamples, ...), dtype=torch.complex64
+                Signal to be clipped. Size at 'dim' is nSamples
+            clip_ratio: float
+                Ratio of signal to clip. Default: 0.05
+            dim: int
+                The dimension across which the signal varies over time. Default: 0
+        """
+        max_amp = torch.max(torch.abs(signal))
+        min_amp = torch.min(torch.abs(signal))
+        amp_diff = max_amp - min_amp
+        clipped_max = max_amp - clip_ratio*amp_diff
+        clipped_min = min_amp + clip_ratio*amp_diff
+        print(clipped_max)
+        print(clipped_min)
+        i_max = torch.abs(signal) > clipped_max
+        signal[i_max] = signal[i_max] / torch.abs(signal[i_max]) * clipped_max
+
+        i_min = torch.abs(signal) < clipped_min
+        signal[i_min] = signal[i_min] / torch.abs(signal[i_min]) * clipped_min
+
+        return signal
+    
+
+    def ofdm_clip(self, signal, clip_ratio_db, dim=0):
+        """
+        Performs clipping at the transmitter, generally used in OFDM to lower peak-to-average-power-ratio.
+        """
+        clip_ratio = 10**(clip_ratio_db/20)
+        power = torch.mean(torch.abs(signal)**2, dim=0, keepdim=True)
+        A = clip_ratio * torch.sqrt(power)
+        p = torch.abs(signal) > A
+        signal[p] = (A * (signal/torch.abs(signal)))[p]
+        return signal
+
 
 
     def generate_symbs(self, pilots_spacing=None, batch_size=1):
@@ -248,24 +327,23 @@ class SignalGenerator():
         if self.M > 2:
             symbs /= (self.M - 1)
         
-        
         # Insert pilots
         if pilots_spacing:
-            pol1 = [0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j]
-            pol2 = [0.7071-0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j]
-            pol1 = torch.tensor(pol1, dtype=torch.complex64, device=self.device)
-            pol2 = torch.tensor(pol2, dtype=torch.complex64, device=self.device)
-            pilot = torch.stack((pol1, pol2), dim=1)[None, :, :, None]
-            symbs[:, ::pilots_spacing] = pilot[:,:self.nSymbs//pilots_spacing].repeat((batch_size, 1, 1, 1))
+            # pol1 = [0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j]
+            # pol2 = [0.7071-0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j]
+            # pol1 = torch.tensor(pol1, dtype=torch.complex64, device=self.device)
+            # pol2 = torch.tensor(pol2, dtype=torch.complex64, device=self.device)
+            # pilot = torch.stack((pol1, pol2), dim=1)[None, :, :, None]
+            # symbs[:, ::pilots_spacing] = pilot[:,:self.nSymbs//pilots_spacing].repeat((batch_size, 1, 1, 1))
             
-            # gen = torch.Generator(device=self.device)
-            # gen = gen.manual_seed(0)
-            # pI = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
-            # pI *= np.sqrt(2)/2
-            # pQ = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
-            # pQ *= np.sqrt(2)/2
-            # pilot = pI + 1j*pQ
-            # symbs[:, ::pilots_spacing] = pilot.repeat((batch_size, 1, 1, 1))   
+            gen = torch.Generator(device=self.device)
+            gen = gen.manual_seed(0)
+            pI = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
+            pI *= np.sqrt(2)/2
+            pQ = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
+            pQ *= np.sqrt(2)/2
+            pilot = pI + 1j*pQ
+            symbs[:, ::pilots_spacing] = pilot.repeat((batch_size, 1, 1, 1))   
                 
         return symbs
 
@@ -304,7 +382,7 @@ class SignalGenerator():
                 The complex signal to be sent
             symbs: torch.tensor, shape (nSymbs, nModes, nChnls), dtype complex128
                 The actual set of symbols that was sent
-        """
+        """    
         freq_bins = self.freq_bins[:, None]
         nearest_freq_idx = torch.abs(freq_bins - ((-(self.nChnls//2) + torch.arange(self.nChnls, device=self.device)) * self.freq_sep)).argmin(dim=0)
         near_freq = self.freq_bins[nearest_freq_idx]
@@ -318,16 +396,6 @@ class SignalGenerator():
         sig = torch.sum(w[None, :, None, :] * shaped_signal, axis=-1)
         #sig = torch.sum(torch.exp(1j*2*torch.pi*near_freq*self.time_bins[:, None])[None, :, None, :] * shaped_signal, axis=-1)
         return sig
-
-
-    def get_phase_noise(self, linewidth, num_samples, common_offset, batch_size=1, offset=0):
-        ts = 1/self.sampling_freq
-        var = 2 * torch.pi * linewidth * ts
-        phase_offset = torch.randn((batch_size, ), device=self.device) * torch.sqrt(var * offset)
-        phase_steps = torch.randn((batch_size, num_samples), device=self.device) * torch.sqrt(var)[:, None] 
-        phase = torch.cumsum(phase_steps, dim=1) + phase_offset[:, None] + common_offset
-        #return phase
-        return torch.cos(phase) + 1j * torch.sin(phase)
 
 
     def get_Rx_signal(self, sig):
