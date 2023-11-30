@@ -378,9 +378,15 @@ def create_rrc_filter(sps, alpha, pulse_dur, device):
 
 def apply_delay(signal, delay, dim=0):
     wT = torch.fft.fftfreq(n=signal.shape[dim], d=1 / (2 * torch.pi), device=signal.device)
-    shape = [1 for _ in range(signal.ndim)]
-    shape[dim] = signal.shape[dim]
-    return torch.fft.ifft(torch.fft.fft(signal) * torch.exp(-1j * delay * wT).view(shape))
+    freq_shape = [1 for _ in range(signal.ndim)]
+    freq_shape[dim] = signal.shape[dim]
+    wT = wT.view(freq_shape)
+
+    delay_shape = [1 for _ in range(signal.ndim)]
+    delay_shape[0] = signal.shape[0]
+    delay = delay.view(delay_shape)
+
+    return torch.fft.ifft(torch.fft.fft(signal, dim=dim) * torch.exp(-1j * delay * wT), dim=dim)
 
 
 def generate_bins(sampling_freq, nSamples, device):
@@ -403,9 +409,21 @@ def generate_bins(sampling_freq, nSamples, device):
     return freq_bins, time_bins
 
 
-def get_constellation_points(M):
-    xI = torch.linspace(-1, 1, M)
-    xQ = torch.linspace(-1, 1, M)
+def get_constellation_points(m):
+    """
+    Generates a list of constellation points, given an m = log2(M)
+
+    Parameters:
+        m: int
+            The size of one side of a square constellation (i.e. number of bits)
+    
+    Returns:
+        symbs: torch.tensor, shape=(M,), dtype=torch.complex64
+            The symbols of the constellation
+    
+    """
+    xI = torch.linspace(-1, 1, m)
+    xQ = torch.linspace(-1, 1, m)
     grid = torch.meshgrid((xI, xQ))
     symbs = (grid[0] + 1j*grid[1]).flatten()
     return symbs

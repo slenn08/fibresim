@@ -206,11 +206,14 @@ class SignalGenerator():
             for _ in range(signals_per_fibre):
                 launch_power = 0 + torch.rand((num_fibres,), device=self.device)*10
                 common_offset = 0#((torch.rand((num_fibres, ), device=self.device)*2 - 1) * torch.pi)[:, None]
+                # Random delay between -1 and 1 samples
+                delay = torch.rand((num_fibres,), device=self.device) * 2 - 1
 
                 tx_train = self.generate_cazac_seq().repeat((num_fibres, 1, 1))
                 # tx_train = DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2)
                 tx_train = self.add_phase_noise(DSPUtils.set_power(tx_train, launch_power, dim=1, mode_dim=2), common_offset)
                 rx_train = fibres.simulate(tx_train)
+                rx_train = DSPUtils.apply_delay(rx_train, delay, dim=1)
                 rx_train = post_process(rx_train)
 
                 symbs = self.generate_symbs(pilots_spacing=pilot_spacing, batch_size=num_fibres)
@@ -220,6 +223,7 @@ class SignalGenerator():
                 # tx_data = DSPUtils.set_power(tx_data, launch_power, dim=1, mode_dim=2)
                 # tx_data = pre_process(tx_data)
                 rx_data = fibres.simulate(tx_data)
+                rx_data = DSPUtils.apply_delay(rx_data, delay, dim=1)
                 rx_data = post_process(rx_data)
                 # yield tx_data, tx_train, symbs
                 yield rx_data, rx_train, symbs
@@ -329,21 +333,21 @@ class SignalGenerator():
         
         # Insert pilots
         if pilots_spacing:
-            # pol1 = [0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j]
-            # pol2 = [0.7071-0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j]
-            # pol1 = torch.tensor(pol1, dtype=torch.complex64, device=self.device)
-            # pol2 = torch.tensor(pol2, dtype=torch.complex64, device=self.device)
-            # pilot = torch.stack((pol1, pol2), dim=1)[None, :, :, None]
-            # symbs[:, ::pilots_spacing] = pilot[:,:self.nSymbs//pilots_spacing].repeat((batch_size, 1, 1, 1))
+            pol1 = [0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, -0.7071-0.7071j,  0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071+0.7071j]
+            pol2 = [0.7071-0.7071j, -0.7071-0.7071j, -0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071+0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, -0.7071-0.7071j, -0.7071-0.7071j,  0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, -0.7071+0.7071j, 0.7071+0.7071j, 0.7071-0.7071j, 0.7071-0.7071j, 0.7071+0.7071j]
+            pol1 = torch.tensor(pol1, dtype=torch.complex64, device=self.device)
+            pol2 = torch.tensor(pol2, dtype=torch.complex64, device=self.device)
+            pilot = torch.stack((pol1, pol2), dim=1)[None, :, :, None]
+            symbs[:, ::pilots_spacing] = pilot[:,:self.nSymbs//pilots_spacing].repeat((batch_size, 1, 1, 1))
             
-            gen = torch.Generator(device=self.device)
-            gen = gen.manual_seed(0)
-            pI = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
-            pI *= np.sqrt(2)/2
-            pQ = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
-            pQ *= np.sqrt(2)/2
-            pilot = pI + 1j*pQ
-            symbs[:, ::pilots_spacing] = pilot.repeat((batch_size, 1, 1, 1))   
+            # gen = torch.Generator(device=self.device)
+            # gen = gen.manual_seed(0)
+            # pI = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
+            # pI *= np.sqrt(2)/2
+            # pQ = torch.randint(0, 2, (self.nSymbs // pilots_spacing,self.nModes,self.nChnls), device=self.device, generator=gen).to(dtype=torch.float) * 2 - 1
+            # pQ *= np.sqrt(2)/2
+            # pilot = pI + 1j*pQ
+            # symbs[:, ::pilots_spacing] = pilot.repeat((batch_size, 1, 1, 1))   
                 
         return symbs
 
