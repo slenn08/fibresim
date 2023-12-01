@@ -179,7 +179,7 @@ class SignalGenerator():
         self.freq_bins, self.time_bins = DSPUtils.generate_bins(sampling_freq, self.nSamples, device)
 
 
-    def signal_generator(self, fibre_generator, signals_per_fibre, num_fibres, pre_process=lambda x: x, post_process=lambda x: x, pilot_spacing=None):
+    def signal_generator(self, fibre_generator, signals_per_fibre, num_fibres, pre_process=lambda x: x, post_process=lambda x: x, pilot_spacing=None, noise_var=0):
         """
         Initialises a generator for producing batches of signals given a fibre generator
 
@@ -216,7 +216,7 @@ class SignalGenerator():
                 rx_train = DSPUtils.apply_delay(rx_train, delay, dim=1)
                 rx_train = post_process(rx_train)
 
-                symbs = self.generate_symbs(pilots_spacing=pilot_spacing, batch_size=num_fibres)
+                symbs = self.generate_symbs(pilots_spacing=pilot_spacing, batch_size=num_fibres, noise_var=noise_var)
                 tx_data = self.generate_signal(symbs)
                 offset = torch.randint(0, 20, (tx_data.shape[0],), device=self.device) * self.nSymbs * self.sps
                 tx_data = self.add_phase_noise(DSPUtils.set_power(tx_data, launch_power, dim=1, mode_dim=2), common_offset, offset=offset)
