@@ -321,7 +321,7 @@ class SignalGenerator():
 
 
 
-    def generate_symbs(self, pilots_spacing=None, batch_size=1):
+    def generate_symbs(self, pilots_spacing=None, batch_size=1, noise_var=0):
         xI = torch.randint(0, self.M, (batch_size,self.nSymbs,self.nModes,self.nChnls), device=self.device)
         xI = 2*xI - (self.M-1)
         xQ = torch.randint(0, self.M, (batch_size,self.nSymbs,self.nModes,self.nChnls), device=self.device)
@@ -330,6 +330,8 @@ class SignalGenerator():
 
         if self.M > 2:
             symbs /= (self.M - 1)
+        
+        symbs += torch.randn_like(symbs) * noise_var
         
         # Insert pilots
         if pilots_spacing:
