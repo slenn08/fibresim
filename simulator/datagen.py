@@ -331,7 +331,13 @@ class SignalGenerator():
         if self.M > 2:
             symbs /= (self.M - 1)
         
-        symbs += torch.randn_like(symbs) * noise_var
+        # symbs += torch.randn_like(symbs) * noise_var
+
+        # xI = torch.rand((batch_size//2,self.nSymbs,self.nModes,self.nChnls), device=self.device) * 3 - 1.5
+        # xQ = torch.rand((batch_size//2,self.nSymbs,self.nModes,self.nChnls), device=self.device) * 3 - 1.5
+        # symbs_uni = xI + 1j*xQ
+
+        # symbs = torch.concat((symbs, symbs_uni), dim=0)
         
         # Insert pilots
         if pilots_spacing:
